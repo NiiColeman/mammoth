@@ -3,7 +3,6 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 import os
 from typing import Optional, Tuple
 
@@ -38,11 +37,11 @@ class TinyImagenet(Dataset):
 
         if download:
             if os.path.isdir(root) and len(os.listdir(root)) > 0:
-                logging.info('Download not needed, files already on disk.')
+                print('Download not needed, files already on disk.')
             else:
                 from onedrivedownloader import download
 
-                logging.info('Downloading dataset')
+                print('Downloading dataset')
                 ln = "https://unimore365-my.sharepoint.com/:u:/g/personal/263133_unimore_it/EVKugslStrtNpyLGbgrhjaABqRHcE3PB_r2OEaV7Jy94oQ?e=9K29aD"
                 download(ln, filename=smart_joint(root, 'tiny-imagenet-processed.zip'), unzip=True, unzip_path=root, clean=True)
 
@@ -134,9 +133,11 @@ class SequentialTinyImagenet(ContinualDataset):
     N_TASKS = 10
     N_CLASSES = N_CLASSES_PER_TASK * N_TASKS
     MEAN, STD = (0.4802, 0.4480, 0.3975), (0.2770, 0.2691, 0.2821)
-    SIZE = (64, 64)
+    SIZE = (224, 224)
     TRANSFORM = transforms.Compose(
-        [transforms.RandomCrop(64, padding=4),
+        [
+         transforms.Resize((SIZE[0], SIZE[1]), interpolation=Image.BICUBIC),
+         
          transforms.RandomHorizontalFlip(),
          transforms.ToTensor(),
          transforms.Normalize(MEAN, STD)])
@@ -145,7 +146,8 @@ class SequentialTinyImagenet(ContinualDataset):
         transform = self.TRANSFORM
 
         test_transform = transforms.Compose(
-            [transforms.ToTensor(), self.get_normalization_transform()])
+            [transforms.Resize((self.SIZE[0], self.SIZE[1]), interpolation=Image.BICUBIC),
+             transforms.ToTensor(), self.get_normalization_transform()])
 
         train_dataset = MyTinyImagenet(base_path() + 'TINYIMG',
                                        train=True, download=True, transform=transform)
@@ -157,7 +159,7 @@ class SequentialTinyImagenet(ContinualDataset):
 
     @set_default_from_args("backbone")
     def get_backbone():
-        return "resnet18"
+        return "vit"
 
     @staticmethod
     def get_loss():
