@@ -42,6 +42,7 @@ from utils.conf import get_device, warn_once
 from utils.kornia_utils import to_kornia_transform
 from utils.magic import persistent_locals
 from torchvision import transforms
+from utils.parameter_integration import ParameterTracker
 
 if TYPE_CHECKING:
     from datasets.utils.continual_dataset import ContinualDataset
@@ -201,6 +202,8 @@ class ContinualModel(nn.Module):
         self.SETTING = self.dataset.SETTING
         self._cpt = self.dataset.N_CLASSES_PER_TASK
         self._current_task = 0
+        self.param_tracker = ParameterTracker()  # Parameter tracker for the model. Used to track the parameters of the model and to compute the gradients
+
 
         try:
             if transform is not None:
@@ -324,6 +327,13 @@ class ContinualModel(nn.Module):
         Prepares the model for the current task.
         Executed before each task.
         """
+        if hasattr(self, 'param_tracker'):
+            self.param_tracker.analyze_model_parameters(
+                self.net, 
+                task_id=self.current_task,
+                model_name=f"{self.NAME} (Begin Task {self.current_task})",
+                verbose=False
+            )
         pass
 
     def end_task(self, dataset: 'ContinualDataset') -> None:
@@ -379,6 +389,18 @@ class ContinualModel(nn.Module):
             the result of the computation
         """
         return self.net(x)
+
+    def observe(self, inputs, labels, not_aug_inputs, epoch=0):
+        """
+        The observe method with optional parameter tracking.
+        """
+        # ... existing observe code ...
+        
+        # Optional: Track parameters every N epochs during training
+        if hasattr(self, 'param_tracker') and epoch % 20 == 0:
+            self.param_tracker.track_training_progress(self.net, epoch, track_frequency=1)
+        
+        return loss.item()
 
     def meta_observe(self, *args, **kwargs):
         """

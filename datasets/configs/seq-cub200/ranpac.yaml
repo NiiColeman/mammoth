@@ -1,3 +1,7 @@
+
+N_TASKS: 20
+N_CLASSES_PER_TASK: 10
+N_CLASSES: 200
 MEAN: [0, 0, 0]
 STD: [1, 1, 1]
 TRANSFORM:
@@ -25,4 +29,4 @@ TEST_TRANSFORM:
       mean: [0, 0, 0]
       std: [1, 1, 1]
 batch_size: 48
-n_epochs: 20
+n_epochs: 15

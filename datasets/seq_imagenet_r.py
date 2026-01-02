@@ -113,7 +113,7 @@ class SequentialImagenetR(ContinualDataset):
 
     NAME = 'seq-imagenet-r'
     SETTING = 'class-il'
-    N_TASKS = 10
+    N_TASKS = 100
     N_CLASSES = 200
     N_CLASSES_PER_TASK = N_CLASSES // N_TASKS
     MEAN, STD = (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
@@ -125,9 +125,8 @@ class SequentialImagenetR(ContinualDataset):
         transforms.ToTensor(),
         transforms.Normalize(mean=MEAN, std=STD),
     ])
-    TEST_TRANSFORM = transforms.Compose([transforms.Resize(size=(256, 256),
+    TEST_TRANSFORM = transforms.Compose([transforms.Resize([SIZE[0], SIZE[1]],
                                                            interpolation=InterpolationMode.BICUBIC),
-                                         transforms.CenterCrop(SIZE[0]),
                                          transforms.ToTensor(),
                                          transforms.Normalize(mean=MEAN, std=STD)])
 

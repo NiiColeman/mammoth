@@ -96,7 +96,9 @@ logs
 _autosummary
 generated
 val_permutations
-
+data/
+checkpoints/
+out/
 # Other prepare grid scripts except the example one
 scripts/prepare_grid*
 

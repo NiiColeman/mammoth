@@ -27,9 +27,6 @@ from utils.loggers import log_extra_metrics, Logger
 from utils.schedulers import get_scheduler
 from utils.stats import track_system_stats
 
-# ADDITION: Import parameter tracking
-from utils.parameter_integration import ParameterTracker
-
 try:
     import wandb
 except ImportError:
@@ -61,45 +58,15 @@ def _to_device(name: str, x, device):
     return x
 
 
-def log_parameter_efficiency(logger, analysis: dict, args):
-    """Log parameter efficiency metrics to wandb or other loggers."""
-    task_id = analysis.get('task_id', 0)
-    
-    log_data = {
-        f'params/total_task_{task_id}': analysis['total_params'],
-        f'params/trainable_task_{task_id}': analysis['trainable_params'],
-        f'params/frozen_task_{task_id}': analysis['frozen_params'],
-        f'params/trainable_ratio_task_{task_id}': analysis['efficiency_metrics']['trainable_ratio'],
-    }
-    
-    # Add category-specific metrics
-    for category, count in analysis['trainable_category_counts'].items():
-        log_data[f'params/{category}_task_{task_id}'] = count
-    
-    # Add parameter overhead if available
-    if analysis['efficiency_metrics']['parameter_overhead'] is not None:
-        log_data[f'params/overhead_task_{task_id}'] = analysis['efficiency_metrics']['parameter_overhead']
-    
-    # Log to wandb if available
-    try:
-        if not args.nowand and wandb is not None:
-            wandb.log(log_data)
-    except Exception as e:
-        logging.warning(f"Could not log to wandb: {e}")
-    
-    # Log to your custom logger
-    if hasattr(logger, 'log'):
-        try:
-            logger.log(log_data)
-        except Exception as e:
-            logging.warning(f"Could not log to custom logger: {e}")
-    
-    # Also log some key metrics to console
-    logging.info(f"📊 Task {task_id} Parameter Efficiency:")
-    logging.info(f"   Trainable: {analysis['trainable_params']:,} ({analysis['efficiency_metrics']['trainable_percentage']:.2f}%)")
-    if analysis['efficiency_metrics']['parameter_overhead'] is not None:
-        logging.info(f"   Overhead: {analysis['efficiency_metrics']['parameter_overhead']:.2f}%")
-
+def count_trainable_vs_total_params(model):
+    """
+    Returns the number of trainable parameters, total parameters,
+    and the percentage of trainable parameters in the model.
+    """
+    total_params = sum(p.numel() for p in model.net.parameters())
+    trainable_params = sum(p.numel() for p in model.net.parameters() if p.requires_grad)
+    percent = 100 * trainable_params / total_params if total_params > 0 else 0
+    return trainable_params, total_params, percent
 
 def train_single_epoch(model: ContinualModel,
                        train_loader: Iterable,
@@ -107,8 +74,7 @@ def train_single_epoch(model: ContinualModel,
                        epoch: int,
                        pbar: tqdm,
                        system_tracker=None,
-                       scheduler=None,
-                       param_tracker=None) -> int:  # ADDITION: Added param_tracker parameter
+                       scheduler=None) -> int:
     """
     Trains the model for a single epoch.
 
@@ -117,10 +83,8 @@ def train_single_epoch(model: ContinualModel,
         train_loader: the data loader for the training set
         args: the arguments from the command line
         epoch: the current epoch
-        pbar: the progress bar for the current epoch
         system_tracker: the system tracker to monitor the system stats
         scheduler: the scheduler for the current epoch
-        param_tracker: the parameter tracker for monitoring parameter changes
 
     Returns:
         the number of iterations performed in the current epoch
@@ -136,6 +100,7 @@ def train_single_epoch(model: ContinualModel,
         try:
             data = next(train_iter)
         except StopIteration:
+            print("STOP ITERATION")
             break
         if args.debug_mode and i > model.get_debug_iters():
             break
@@ -158,12 +123,6 @@ def train_single_epoch(model: ContinualModel,
         if scheduler is not None and args.scheduler_mode == 'iter':
             scheduler.step()
 
-        # ADDITION: Track parameters during training if tracker is available
-        if hasattr(model.net, 'named_parameters') and param_tracker is not None:
-            
-            if param_tracker is not None:
-                param_tracker.track_training_progress(model.net, epoch, track_frequency=10)
-
         if args.code_optimization == 0 and 'cuda' in str(args.device):
             torch.cuda.synchronize()
         system_tracker()
@@ -175,54 +134,11 @@ def train_single_epoch(model: ContinualModel,
     if scheduler is not None and args.scheduler_mode == 'epoch':
         scheduler.step()
 
-    return i
-
-
-def log_parameter_efficiency(logger, analysis: dict, args):
-    """Log parameter efficiency metrics to wandb or other loggers."""
-    task_id = analysis.get('task_id', 0)
-    
-    log_data = {
-        f'params/total_task_{task_id}': analysis['total_params'],
-        f'params/trainable_task_{task_id}': analysis['trainable_params'],
-        f'params/frozen_task_{task_id}': analysis['frozen_params'],
-        f'params/trainable_ratio_task_{task_id}': analysis['efficiency_metrics']['trainable_ratio'],
-    }
-    
-    # Add category-specific metrics
-    for category, count in analysis['trainable_category_counts'].items():
-        log_data[f'params/{category}_task_{task_id}'] = count
-    
-    # Add parameter overhead if available
-    if analysis['efficiency_metrics']['parameter_overhead'] is not None:
-        log_data[f'params/overhead_task_{task_id}'] = analysis['efficiency_metrics']['parameter_overhead']
-    
-    # Log to wandb if available
-    try:
-        if not args.nowand and wandb is not None:
-            wandb.log(log_data)
-    except Exception as e:
-        logging.warning(f"Could not log to wandb: {e}")
-    
-    # Log to your custom logger
-    if hasattr(logger, 'log'):
-        try:
-            logger.log(log_data)
-        except Exception as e:
-            logging.warning(f"Could not log to custom logger: {e}")
-    
-    # Also log some key metrics to console
-    logging.info(f"📊 Task {task_id} Parameter Efficiency:")
-    logging.info(f"   Trainable: {analysis['trainable_params']:,} ({analysis['efficiency_metrics']['trainable_percentage']:.2f}%)")
-    if analysis['efficiency_metrics']['parameter_overhead'] is not None:
-        logging.info(f"   Overhead: {analysis['efficiency_metrics']['parameter_overhead']:.2f}%")
-
-
 @can_save_and_exit
 def train(model: ContinualModel, dataset: ContinualDataset,
           args: Optional[Namespace] = None) -> None:
     """
-    The training process, including evaluations and loggers with integrated parameter tracking.
+    The training process, including evaluations and loggers.
 
     Args:
         model: the module to be trained
@@ -238,10 +154,6 @@ def train(model: ContinualModel, dataset: ContinualDataset,
         assert 'MAMMOTH_ARGS' in os.environ, "No args provided, please set the MAMMOTH_ARGS environment variable"
         args = Namespace(**json.loads(os.environ['MAMMOTH_ARGS']))
 
-    # ADDITION: Initialize parameter tracker
-    param_tracker = ParameterTracker()
-    logging.info("🔍 Parameter tracking initialized")
-
     is_fwd_enabled = True
     can_compute_fwd_beforetask = True
     random_results_class, random_results_task = [], []
@@ -254,18 +166,6 @@ def train(model: ContinualModel, dataset: ContinualDataset,
 
     model.net.to(model.device)
     torch.cuda.empty_cache()
-
-    # ADDITION: Analyze initial model parameters
-    logging.info("🔍 Analyzing initial model parameters...")
-    if hasattr(model.net, 'named_parameters'):
-
-        initial_analysis = param_tracker.analyze_model_parameters(
-            model.net, 
-            task_id=None, 
-            model_name=f"{model.NAME} (Initial)",
-            verbose=True
-        )
-        param_tracker.initial_params = initial_analysis
 
     with track_system_stats(logger) as system_tracker:
         results, results_mask_classes = [], []
@@ -305,29 +205,12 @@ def train(model: ContinualModel, dataset: ContinualDataset,
             eval_dataset = dataset
 
         torch.cuda.empty_cache()
-        
-        # Main training loop for each task
         for cur_task in range(start_task, end_task):
             model.net.train()
-            if hasattr(model.net, 'named_parameters'):
-                model_trainable_params = sum(p.numel() for p in model.net.parameters() if p.requires_grad)
-                logging.info(f"Training Task {cur_task + 1} - Model has {model_trainable_params:,} trainable parameters")
             train_loader, _ = dataset.get_data_loaders()
 
             if not issubclass(dataset.__class__, GCLDataset):
                 assert issubclass(train_loader.dataset.__class__, MammothDatasetWrapper), "Dataset must be an instance of MammothDatasetWrapper (did you forget to call the `store_masked_loaders`?)"
-
-            # ADDITION: Analyze parameters before task
-            logging.info(f"📊 Analyzing parameters before Task {cur_task + 1}...")
-            #  model has named parameters lets track them else check parameters manually
-
-            if hasattr(model.net, 'named_parameters'):
-                pre_task_analysis = param_tracker.analyze_model_parameters(
-                    model.net, 
-                    task_id=cur_task, 
-                    model_name=f"{model.NAME} (Pre-Task {cur_task + 1})",
-                    verbose=False
-                )
 
             if can_compute_fwd_beforetask and is_fwd_enabled and args.enable_other_metrics:
                 # try to compute accuracy at the beginning of the task
@@ -342,24 +225,6 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                     can_compute_fwd_beforetask = False
 
             model.meta_begin_task(dataset)
-
-            # ADDITION: Analyze parameters after begin_task
-            post_begin_analysis = param_tracker.analyze_model_parameters(
-                model.net, 
-                task_id=cur_task, 
-                model_name=f"{model.NAME} (Post-Begin Task {cur_task + 1})",
-                verbose=True
-            )
-
-            # ADDITION: Check for parameter changes during begin_task
-            if hasattr(model.net, 'named_parameters'):
-                
-                if (post_begin_analysis['total_params'] != pre_task_analysis['total_params']):
-                    logging.info(f"⚠️  Parameters changed during begin_task for Task {cur_task + 1}")
-                    param_change = post_begin_analysis['total_params'] - pre_task_analysis['total_params']
-                    trainable_change = post_begin_analysis['trainable_params'] - pre_task_analysis['trainable_params']
-                    logging.info(f"   Total change: {param_change:+,} parameters")
-                    logging.info(f"   Trainable change: {trainable_change:+,} parameters")
 
             if not can_compute_fwd_beforetask and is_fwd_enabled and args.enable_other_metrics:
                 if train_loader.dataset.num_times_iterated == 0:  # compute only if the model has not been trained yet
@@ -400,16 +265,13 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                 if args.non_verbose:
                     logging.info(f"Task {cur_task + 1}")  # at least print the task number
 
-                # Training epoch loop
                 while True:
                     model.meta_begin_epoch(epoch, dataset)
 
                     train_pbar.set_description(f"Task {cur_task + 1} - Epoch {epoch + 1}")
 
-                    # ADDITION: Pass param_tracker to train_single_epoch
                     train_single_epoch(model, train_loader, args, pbar=train_pbar, epoch=epoch,
-                                       system_tracker=system_tracker, scheduler=scheduler, 
-                                       param_tracker=param_tracker)
+                                       system_tracker=system_tracker, scheduler=scheduler)
 
                     model.meta_end_epoch(epoch, dataset)
 
@@ -446,24 +308,17 @@ def train(model: ContinualModel, dataset: ContinualDataset,
 
                     if args.eval_epochs is not None and (epoch > 0 or args.eval_epochs) and epoch % args.eval_epochs == 0 and epoch < model.args.n_epochs:
                         epoch_accs = eval_dataset.evaluate(model, eval_dataset)
+
                         eval_dataset.log(args, logger, epoch_accs, cur_task, dataset.SETTING, epoch=epoch)
 
                 train_pbar.close()
 
+            traibable_params, total_params, percent = count_trainable_vs_total_params(model)
+            logging.info(f"Trainable parameters: {traibable_params}, Total parameters: {total_params}, "
+                         f"Percentage of trainable parameters: {percent:.2f}%")
+            print(f"Trainable parameters: {traibable_params}, Total parameters: {total_params}, "   
+                  f"Percentage of trainable parameters: {percent:.2f}%")
             model.meta_end_task(dataset)
-
-            # ADDITION: Analyze parameters after task completion
-            if hasattr(model.net, 'named_parameters'):
-                final_task_analysis = param_tracker.analyze_model_parameters(
-                    model.net, 
-                    task_id=cur_task, 
-                    model_name=f"{model.NAME} (Task {cur_task + 1} Complete)",
-                    verbose=True
-                )
-
-                # ADDITION: Log parameter efficiency
-                if not args.disable_log:
-                    log_parameter_efficiency(logger, final_task_analysis, args)
 
             accs = eval_dataset.evaluate(model, eval_dataset)
 
@@ -495,37 +350,14 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                                         optimizer_st=model.opt.state_dict() if hasattr(model, 'opt') else None,
                                         scheduler_st=scheduler.state_dict() if scheduler is not None else None)
 
-        # ADDITION: Final parameter analysis summary
-        logging.info("\n" + "="*80)
-        logging.info("📊 FINAL PARAMETER EFFICIENCY SUMMARY")
-        logging.info("="*80)
-        
-        if len(param_tracker.task_snapshots) > 1:
-            # Compare first and last tasks
-            first_task = min(param_tracker.task_snapshots.keys())
-            last_task = max(param_tracker.task_snapshots.keys())
-            comparison = param_tracker.compare_tasks(first_task, last_task)
-            param_tracker.print_task_comparison(comparison)
-        
-        # Print parameter history during training
-        if param_tracker.param_history:
-            logging.info("\n📈 Parameter Count History During Training:")
-            recent_snapshots = param_tracker.param_history[-10:]  # Last 10 snapshots
-            for i, snapshot in enumerate(recent_snapshots):
-                if i == 0 or i == len(recent_snapshots) - 1 or i % 3 == 0:  # Show first, last, and every 3rd
-                    logging.info(f"  Epoch {snapshot['epoch']}: {param_tracker.format_number(snapshot['trainable_params'])} trainable")
-            
-            # Show parameter stability
-            if len(param_tracker.param_history) > 1:
-                first_count = param_tracker.param_history[0]['trainable_params']
-                last_count = param_tracker.param_history[-1]['trainable_params']
-                if first_count == last_count:
-                    logging.info("✅ Parameter count remained stable during training")
-                else:
-                    logging.info(f"⚠️  Parameter count changed during training: {last_count - first_count:+,}")
-
         if args.validation:
             # Final evaluation on the real test set
+            trainable_params, total_params, percent = count_trainable_vs_total_params(model)
+            logging.info(f"Trainable parameters: {trainable_params}, Total parameters: {total_params}, "
+                         f"Percentage of trainable parameters: {percent:.2f}%")
+            print(f"Trainable parameters: {trainable_params}, Total parameters: {total_params}, "
+                  f"Percentage of trainable parameters: {percent:.2f}%")
+  
             logging.info("Starting final evaluation on the real test set...")
             del dataset
             args.validation = None
